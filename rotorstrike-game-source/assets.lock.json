@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "groups": {
+    "share": {
+      "name": "Share",
+      "order": 10
+    }
+  },
+  "bundles": {},
+  "assets": {
+    "assets/share/favicon.png": {
+      "path": "/manus-storage/game/sha256/70a6d6ac7ea8ec692392fcf27458cf097ec1b81e59b0780833425f4cda68aaa5.png",
+      "sha256": "sha256:70a6d6ac7ea8ec692392fcf27458cf097ec1b81e59b0780833425f4cda68aaa5",
+      "size": 24458,
+      "assetType": "image",
+      "groupId": "share"
+    },
+    "assets/share/og.png": {
+      "path": "/manus-storage/game/sha256/1555451861ad8e94953b0b8132ccee5cf54f6ee28f555c092d3df76670aec3ca.png",
+      "sha256": "sha256:1555451861ad8e94953b0b8132ccee5cf54f6ee28f555c092d3df76670aec3ca",
+      "size": 1164475,
+      "assetType": "image",
+      "groupId": "share"
+    }
+  }
+}

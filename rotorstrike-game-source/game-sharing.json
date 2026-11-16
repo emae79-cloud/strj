@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "ROTOR STRIKE",
+  "description": "Tarayıcıda oynanan 3D drone savaş simülatörü. Dronunu birinci şahıs kokpitten uçur, dalgalar hâlinde gelen düşman dronları düşür, kredi topla; hangarda yeni dronlar ve yükseltmeler aç.",
+  "defaultCaptions": {
+    "x": "ROTOR STRIKE — tarayıcıda oynanan 3D drone savaş simülatörü. Uç, nişan al, düşür: her drone dört isabetle iner. Kredi topla, hangarda yeni dronlar aç. #RotorStrike #WebGL",
+    "facebook": "ROTOR STRIKE: gerçekçi uçuş fiziği, gimbal kokpit görünümü ve dalga dalga gelen düşman dronlarıyla tarayıcıda oynanan 3D hava muharebe oyunu. Kazandığın kredilerle hangarda yeni dronlar ve yükseltmeler aç.",
+    "reddit": "Tarayıcıda çalışan 3D drone it dalaşı oyunu yaptım: ROTOR STRIKE. FPS gibi ama uçarak — dronun gövdesine yerleşik topla düşman dronları düşürüyorsun, her drone 4 can, kazanınca hangarda yeni araçlar açılıyor.",
+    "discord": "ROTOR STRIKE — tarayıcıda 3D drone savaşı. Uç, nişan al, düşür; kredi topla ve hangarda yeni dronlar aç."
+  },
+  "assets": {
+    "og": "assets/share/og.png",
+    "favicon": "assets/share/favicon.png"
+  }
+}
