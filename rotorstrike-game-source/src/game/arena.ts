@@ -1,14 +1,14 @@
 import * as THREE from 'three'
 import type { Physics } from '../engine/physics'
 
-import { asphaltTexture, facadeTexture, rockTexture, sandTexture } from './textures'
+import { asphaltTexture, concreteTexture, facadeTexture } from './textures'
 /**
- * Savaş alanı: çöl kanyonu ile endüstriyel şehir çatılarının birleşimi. Bütün geometri ilkel
- * şekillerden ve deterministik bir rastgele üreticiden gelir; collider'lar görünen mesh
- * boyutlarıyla aynı yerden türetilir.
+ * Savaş alanı: düzenli yollar, yüksek binalar, kanal-köprü ve park içeren modern şehir merkezi.
+ * Geometri ilkel şekillerden ve deterministik rastgele üreticiden gelir; collider'lar görünen
+ * mesh boyutlarıyla aynı yerden türetilir.
  */
 export const ARENA = {
-  /** Oyuncunun doğduğu nokta — şehre bakan bir tepe. */
+  /** Oyuncunun doğduğu nokta — şehir merkezine bakan iniş platformu. */
   spawn: new THREE.Vector3(0, 42, 96),
   ground: 0,
   /** Uçuş alanı sınırı (m). */
@@ -17,15 +17,10 @@ export const ARENA = {
 
 export const PALETTE = {
   skyTop: new THREE.Color('#3478ad'),
-  horizon: new THREE.Color('#e2c092'),
-  sand: new THREE.Color('#c9a877'),
-  sandDark: new THREE.Color('#a8875c'),
-  rock: new THREE.Color('#9c7b5c'),
-  rockDark: new THREE.Color('#6f5641'),
+  horizon: new THREE.Color('#a7b9c0'),
   concrete: new THREE.Color('#8d8a80'),
   concreteDark: new THREE.Color('#5c5a55'),
   metal: new THREE.Color('#7d858c'),
-  rust: new THREE.Color('#a5653c'),
   accent: new THREE.Color('#ff6a2b'),
   teal: new THREE.Color('#3ad8c8'),
 }
@@ -95,8 +90,13 @@ export class Arena {
     this.scene.add(this.sun, this.sun.target)
 
     this.addGround()
-    this.addCanyon(random)
+    this.addDistantSkyline(random)
     this.addCity(random)
+    this.addCityLandmark()
+    this.addCityInfrastructure()
+    this.addStreetFurniture()
+    this.addCityPark()
+    this.addCityWaterfront()
     this.addProps(random)
     this.addBoundary()
 
@@ -105,12 +105,15 @@ export class Arena {
     this.dustVel = dust.vel
     this.scene.add(this.dust)
 
-    // Düşman doğma noktaları: şehir ve kanyon çevresinde halka.
-    for (let i = 0; i < 16; i += 1) {
-      const a = (i / 16) * Math.PI * 2 + 0.4
-      const r = 110 + random() * 90
-      this.spawnPoints.push(new THREE.Vector3(Math.cos(a) * r, 28 + random() * 62, Math.sin(a) * r - 20))
-    }
+    // Düşmanlar binaların arkasında değil, açık şehir yollarında doğar.
+    const corridors: [number, number][] = [
+      [-90, -25], [0, -25], [90, -25],
+      [-150, -50], [-30, -50], [60, -50], [150, -50],
+      [-90, -95], [0, -95], [90, -95],
+      [-150, -145], [-30, -145], [60, -145], [150, -145],
+      [-90, -235], [0, -235],
+    ]
+    for (const [x, z] of corridors) this.spawnPoints.push(new THREE.Vector3(x, 38 + random() * 34, z))
   }
 
   update(dt: number, focus: THREE.Vector3): void {
@@ -196,17 +199,17 @@ export class Arena {
   private addGround(): void {
     const geo = new THREE.PlaneGeometry(1200, 1200, 96, 96)
     geo.rotateX(-Math.PI / 2)
-    // Hafif kum kabartması: düz bir levha yerine engebeli bir çöl tabanı.
+    // Şehir dışındaki beton zeminde düşük genlikli yüzey farkı.
     const pos = geo.attributes.position as THREE.BufferAttribute
     const random = rng(9182)
     for (let i = 0; i < pos.count; i += 1) {
       const x = pos.getX(i)
       const z = pos.getZ(i)
-      const h = Math.sin(x * 0.012) * Math.cos(z * 0.009) * 1.6 + (random() - 0.5) * 0.9
+      const h = Math.sin(x * 0.012) * Math.cos(z * 0.009) * 0.18 + (random() - 0.5) * 0.06
       pos.setY(i, h)
     }
     geo.computeVertexNormals()
-    // Büyük ölçekli ton farkı: kumun her yeri aynı renkte görünmesini engeller.
+    // Çok hafif ton farkı: geniş beton zeminin tekdüzeliğini azaltır.
     const colors = new Float32Array(pos.count * 3)
     for (let i = 0; i < pos.count; i += 1) {
       const x = pos.getX(i)
@@ -217,9 +220,12 @@ export class Arena {
       colors[i * 3 + 2] = tone * 0.95
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    const groundMap = concreteTexture().clone()
+    groundMap.wrapS = groundMap.wrapT = THREE.RepeatWrapping
+    groundMap.repeat.set(42, 42)
     const ground = new THREE.Mesh(
       geo,
-      new THREE.MeshStandardMaterial({ map: sandTexture(), vertexColors: true, roughness: 1, metalness: 0 }),
+      new THREE.MeshStandardMaterial({ color: '#737a7e', map: groundMap, vertexColors: true, roughness: 1, metalness: 0.02 }),
     )
     ground.position.y = ARENA.ground
     ground.receiveShadow = true
@@ -236,118 +242,286 @@ export class Arena {
     asphalt.receiveShadow = true
     this.scene.add(asphalt)
 
-    // Çölde dağınık kaya grupları ve çalı kümeleri: ölçek hissi veren küçük detaylar.
-    const scatter = rng(77)
-    for (let i = 0; i < 90; i += 1) {
-      const a = scatter() * Math.PI * 2
-      const r = 60 + scatter() * 420
-      const x = Math.cos(a) * r
-      const z = Math.sin(a) * r
-      if (Math.abs(x) < 180 && z < -10 && z > -260) continue
-      const size = 0.8 + scatter() * 3.4
-      const geoRock = new THREE.IcosahedronGeometry(size, 0)
-      jitter(geoRock, scatter, size * 0.4)
-      const rock = new THREE.Mesh(geoRock, mat(scatter() > 0.5 ? PALETTE.rock : PALETTE.rockDark, 1, 0))
-      rock.position.set(x, size * 0.4, z)
-      rock.rotation.set(scatter() * 0.5, scatter() * Math.PI, scatter() * 0.4)
-      rock.castShadow = true
-      rock.receiveShadow = true
-      this.scene.add(rock)
-    }
   }
 
-  private addCanyon(random: () => number): void {
-    // Çevre mesaları: uçuş alanını çerçeveleyen kanyon duvarları.
-    const ring = [
-      { a: 0.15, r: 300, radius: 46, h: 96 },
-      { a: 0.85, r: 330, radius: 58, h: 120 },
-      { a: 1.6, r: 310, radius: 40, h: 84 },
-      { a: 2.35, r: 340, radius: 62, h: 132 },
-      { a: 3.05, r: 305, radius: 44, h: 90 },
-      { a: 3.75, r: 335, radius: 54, h: 110 },
-      { a: 4.5, r: 315, radius: 48, h: 100 },
-      { a: 5.25, r: 345, radius: 66, h: 140 },
-    ]
-    for (const m of ring) {
-      this.addMesa(Math.cos(m.a) * m.r, Math.sin(m.a) * m.r - 40, m.radius, m.h, random)
-    }
-    // İçeride kalan iki kaya kulesi: rota kırıcı.
-    this.addMesa(-150, 30, 22, 58, random)
-    this.addMesa(165, 10, 18, 46, random)
-
-    // Dağınık kayalar.
-    for (let i = 0; i < 40; i += 1) {
-      const a = random() * Math.PI * 2
-      const r = 70 + random() * 170
-      const x = Math.cos(a) * r
-      const z = Math.sin(a) * r + 30
-      const size = 2 + random() * 7
-      const geo = new THREE.IcosahedronGeometry(size, 0)
-      jitter(geo, random, size * 0.35)
-      const rock = new THREE.Mesh(geo, mat(random() > 0.5 ? PALETTE.rock : PALETTE.rockDark, 1, 0))
-      rock.position.set(x, size * 0.55, z)
-      rock.rotation.set(random() * 0.4, random() * Math.PI, random() * 0.3)
-      rock.castShadow = true
-      rock.receiveShadow = true
-      this.scene.add(rock)
-      if (size > 4) this.physics.addStaticCylinder(new THREE.Vector3(x, size * 0.5, z), size * 0.85, size)
-    }
-  }
-
-  private addMesa(x: number, z: number, radius: number, height: number, random: () => number): void {
-    const geo = new THREE.CylinderGeometry(radius * 0.82, radius, height, 32, 8)
-    jitter(geo, random, radius * 0.05)
-    const mesa = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: rockTexture(), roughness: 1, metalness: 0 }))
-    mesa.position.set(x, height / 2, z)
-    mesa.castShadow = true
-    mesa.receiveShadow = true
-    this.scene.add(mesa)
-
-    // Etek molozu: kayanın dibinde biriken kum konisi.
-    const talus = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 0.98, radius * 1.34, height * 0.13, 24),
-      new THREE.MeshStandardMaterial({ map: sandTexture(), roughness: 1, metalness: 0 }),
+  private addDistantSkyline(random: () => number): void {
+    // Görüş sınırının ardında tek instanced mesh ile şehir silueti oluşturulur.
+    const count = 56
+    const skyline = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.95, metalness: 0.04 }),
+      count,
     )
-    talus.position.set(x, height * 0.065, z)
-    talus.receiveShadow = true
-    talus.castShadow = true
-    this.scene.add(talus)
-
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.84, radius * 0.82, 1.4, 26), mat(PALETTE.sand, 1, 0))
-    cap.position.set(x, height + 0.4, z)
-    cap.receiveShadow = true
-    this.scene.add(cap)
-    this.physics.addStaticCylinder(new THREE.Vector3(x, height / 2, z), radius * 0.9, height)
+    const colors = ['#48575f', '#53636b', '#607078', '#6a777d'].map(color => new THREE.Color(color))
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3()
+    const rotation = new THREE.Quaternion()
+    for (let i = 0; i < count; i += 1) {
+      const angle = (i / count) * Math.PI * 2 + (random() - 0.5) * 0.12
+      const radius = 285 + random() * 110
+      const height = 24 + random() * 86
+      position.set(Math.cos(angle) * radius, height / 2, Math.sin(angle) * radius - 25)
+      scale.set(14 + random() * 24, height, 14 + random() * 24)
+      matrix.compose(position, rotation, scale)
+      skyline.setMatrixAt(i, matrix)
+      skyline.setColorAt(i, colors[Math.floor(random() * colors.length)])
+    }
+    skyline.instanceMatrix.needsUpdate = true
+    if (skyline.instanceColor) skyline.instanceColor.needsUpdate = true
+    skyline.castShadow = false
+    skyline.receiveShadow = false
+    this.scene.add(skyline)
   }
 
   private addCity(random: () => number): void {
+    // Düzenli sokak aralarında farklı yükseklikte ofis ve apartman blokları.
     const blocks: { x: number; z: number; w: number; d: number; h: number }[] = [
-      { x: -52, z: -72, w: 30, d: 26, h: 62 },
-      { x: -12, z: -96, w: 34, d: 30, h: 88 },
-      { x: 34, z: -78, w: 26, d: 30, h: 54 },
-      { x: 70, z: -116, w: 30, d: 34, h: 74 },
-      { x: -70, z: -136, w: 26, d: 28, h: 44 },
-      { x: -34, z: -168, w: 40, d: 30, h: 66 },
-      { x: 22, z: -164, w: 28, d: 26, h: 50 },
-      { x: 58, z: -196, w: 34, d: 30, h: 96 },
-      { x: -96, z: -180, w: 24, d: 24, h: 38 },
-      { x: 104, z: -60, w: 24, d: 28, h: 46 },
-      { x: -110, z: -90, w: 22, d: 26, h: 58 },
-      { x: 6, z: -40, w: 22, d: 22, h: 32 },
+      { x: -120, z: -80, w: 24, d: 24, h: 38 },
+      { x: -55, z: -80, w: 26, d: 24, h: 66 },
+      { x: 45, z: -80, w: 28, d: 26, h: 46 },
+      { x: 125, z: -80, w: 24, d: 24, h: 58 },
+      { x: -120, z: -112, w: 24, d: 24, h: 56 },
+      { x: -55, z: -112, w: 30, d: 26, h: 112 },
+      { x: 45, z: -112, w: 30, d: 26, h: 78 },
+      { x: 125, z: -112, w: 26, d: 24, h: 68 },
+      { x: -120, z: -180, w: 26, d: 26, h: 48 },
+      { x: -55, z: -180, w: 28, d: 26, h: 72 },
+      { x: 45, z: -180, w: 30, d: 26, h: 96 },
+      { x: 125, z: -180, w: 26, d: 26, h: 58 },
+      { x: -120, z: -214, w: 26, d: 26, h: 64 },
+      { x: -55, z: -214, w: 30, d: 26, h: 84 },
+      { x: 45, z: -214, w: 28, d: 26, h: 62 },
+      { x: 125, z: -214, w: 28, d: 26, h: 108 },
     ]
     for (const b of blocks) this.addBuilding(b.x, b.z, b.w, b.d, b.h, random)
 
-    // Vinçler.
-    this.addCrane(-86, -40, 52, 34, random)
-    this.addCrane(86, -150, 60, 40, random)
+    // Bütün çatı saçakları tek instanced mesh: blok siluetlerini daha okunaklı yapar.
+    const roofCaps = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      mat('#77858a', 0.72, 0.28),
+      blocks.length,
+    )
+    const roofMatrix = new THREE.Matrix4()
+    const roofPosition = new THREE.Vector3()
+    const roofScale = new THREE.Vector3()
+    const roofRotation = new THREE.Quaternion()
+    blocks.forEach((b, i) => {
+      roofPosition.set(b.x, b.h + 0.22, b.z)
+      roofScale.set(b.w + 1.2, 0.48, b.d + 1.2)
+      roofCaps.setMatrixAt(i, roofMatrix.compose(roofPosition, roofRotation, roofScale))
+    })
+    roofCaps.instanceMatrix.needsUpdate = true
+    roofCaps.castShadow = false
+    roofCaps.receiveShadow = false
+    this.scene.add(roofCaps)
+  }
 
-    // İletişim kuleleri.
-    this.addTower(-30, 30, 64)
-    this.addTower(120, -20, 78)
+  private addCityLandmark(): void {
+    // Ana bulvarın kuzeyindeki yüksek kule, menü kamerasından da şehir odağı olarak seçilsin.
+    const x = -55
+    const z = -112
+    const frontZ = z + 13.25
+    const ribs = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.72, 108, 0.42),
+      mat('#a3adaf', 0.62, 0.3),
+      7,
+    )
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3(1, 1, 1)
+    const rotation = new THREE.Quaternion()
+    for (let i = 0; i < 7; i += 1) {
+      position.set(x - 13 + i * 4.3, 55, frontZ)
+      ribs.setMatrixAt(i, matrix.compose(position, rotation, scale))
+    }
+    ribs.instanceMatrix.needsUpdate = true
+    ribs.castShadow = false
+    ribs.receiveShadow = false
 
-    // Boru hatları ve konteyner yığını (alçak irtifa engelleri).
-    this.addPipeRun(-120, -30, 60, random)
-    this.addContainers(96, -100, random)
+    const bands = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(30.8, 0.55, 0.48),
+      mat('#4d5b60', 0.58, 0.42),
+      2,
+    )
+    for (const [i, y] of [37, 75].entries()) {
+      position.set(x, y, frontZ + 0.02)
+      bands.setMatrixAt(i, matrix.compose(position, rotation, scale))
+    }
+    bands.instanceMatrix.needsUpdate = true
+    bands.castShadow = false
+    bands.receiveShadow = false
+
+    const crown = new THREE.Mesh(new THREE.BoxGeometry(14, 1.8, 10), mat('#455257', 0.62, 0.42))
+    crown.position.set(x, 112.8, z)
+    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.52, 8, 6), glowMat(PALETTE.accent, 1.8))
+    beacon.position.set(x, 114.1, z)
+    const wayfinding = new THREE.Mesh(new THREE.BoxGeometry(0.42, 28, 0.12), glowMat(PALETTE.teal, 0.65))
+    wayfinding.position.set(x + 8.2, 57, frontZ + 0.28)
+    this.scene.add(ribs, bands, crown, beacon, wayfinding)
+  }
+
+  private addCityInfrastructure(): void {
+    const roadMaterial = mat('#30373b', 0.92, 0.04)
+    const avenueX = [-90, 0, 90]
+    const avenueZ = [-50, -145, -235]
+    for (const x of avenueX) {
+      const road = new THREE.Mesh(new THREE.BoxGeometry(12, 0.1, 270), roadMaterial)
+      road.position.set(x, 0.12, -125)
+      this.scene.add(road)
+    }
+    for (const z of avenueZ) {
+      const road = new THREE.Mesh(new THREE.BoxGeometry(320, 0.1, 12), roadMaterial)
+      road.position.set(0, 0.12, z)
+      this.scene.add(road)
+    }
+
+    // Tek seferde çizilen kısa şeritler; küçük cihazlarda ayrı mesh sayısını artırmaz.
+    const markingMaterial = new THREE.MeshBasicMaterial({ color: '#d8d0ad' })
+    const matrix = new THREE.Matrix4()
+    const rotation = new THREE.Quaternion()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3(1, 1, 1)
+    const vertical = new THREE.InstancedMesh(new THREE.BoxGeometry(0.3, 0.035, 4.5), markingMaterial, 36)
+    let n = 0
+    for (const x of avenueX) for (let z = -220; z < -35; z += 18) {
+      position.set(x, 0.19, z)
+      vertical.setMatrixAt(n++, matrix.compose(position, rotation, scale))
+    }
+    vertical.count = n
+    vertical.instanceMatrix.needsUpdate = true
+    this.scene.add(vertical)
+
+    const horizontal = new THREE.InstancedMesh(new THREE.BoxGeometry(4.5, 0.035, 0.3), markingMaterial, 48)
+    n = 0
+    for (const z of avenueZ) for (let x = -148; x < 155; x += 20) {
+      position.set(x, 0.19, z)
+      horizontal.setMatrixAt(n++, matrix.compose(position, rotation, scale))
+    }
+    horizontal.count = n
+    horizontal.instanceMatrix.needsUpdate = true
+    this.scene.add(horizontal)
+
+    // Her kavşakta zebra geçitleri; 180 çizgi tek instanced draw call ile çizilir.
+    const crosswalk = new THREE.InstancedMesh(new THREE.BoxGeometry(0.85, 0.035, 7), markingMaterial, 180)
+    const crosswise = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2)
+    n = 0
+    for (const x of avenueX) for (const z of avenueZ) {
+      for (const side of [-1, 1]) for (let stripe = -2; stripe <= 2; stripe += 1) {
+        position.set(x + side * 8 + stripe * 1.2, 0.19, z)
+        crosswalk.setMatrixAt(n++, matrix.compose(position, rotation, scale))
+        position.set(x, 0.19, z + side * 8 + stripe * 1.2)
+        crosswalk.setMatrixAt(n++, matrix.compose(position, crosswise, scale))
+      }
+    }
+    crosswalk.count = n
+    crosswalk.instanceMatrix.needsUpdate = true
+    crosswalk.castShadow = false
+    crosswalk.receiveShadow = false
+    this.scene.add(crosswalk)
+  }
+
+  private addStreetFurniture(): void {
+    // Sokak lambaları ve armatürleri instanced çizilir; gerçek ışık kaynağı ekleyerek FPS düşürmez.
+    const avenues = [-90, 0, 90]
+    const zPositions = [-62, -94, -125, -167, -198, -224]
+    const count = avenues.length * zPositions.length * 2
+    const steel = mat('#4b5559', 0.62, 0.48)
+    const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.13, 0.22, 7, 6), steel, count)
+    const arms = new THREE.InstancedMesh(new THREE.BoxGeometry(2.1, 0.16, 0.2), steel, count)
+    const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(1.1, 0.22, 0.52), mat('#303a3e', 0.58, 0.48), count)
+    const emitters = new THREE.InstancedMesh(new THREE.BoxGeometry(0.68, 0.055, 0.34), glowMat('#f0d9ad', 0.8), count)
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3(1, 1, 1)
+    const rotation = new THREE.Quaternion()
+    let i = 0
+    for (const avenue of avenues) {
+      for (const z of zPositions) {
+        for (const side of [-1, 1]) {
+          const x = avenue + side * 8.2
+          position.set(x, 3.5, z)
+          poles.setMatrixAt(i, matrix.compose(position, rotation, scale))
+          position.set(x - side * 0.85, 6.65, z)
+          arms.setMatrixAt(i, matrix.compose(position, rotation, scale))
+          position.set(x - side * 1.65, 6.45, z)
+          heads.setMatrixAt(i, matrix.compose(position, rotation, scale))
+          position.y = 6.32
+          emitters.setMatrixAt(i, matrix.compose(position, rotation, scale))
+          i += 1
+        }
+      }
+    }
+    for (const mesh of [poles, arms, heads, emitters]) {
+      mesh.instanceMatrix.needsUpdate = true
+      mesh.castShadow = false
+      mesh.receiveShadow = false
+    }
+    this.scene.add(poles, arms, heads, emitters)
+  }
+
+  private addCityPark(): void {
+    const turf = new THREE.Mesh(new THREE.BoxGeometry(38, 0.2, 42), mat('#4f6958', 1, 0))
+    turf.position.set(48, 0.12, -22)
+    turf.receiveShadow = true
+    this.scene.add(turf)
+    const pathMaterial = mat('#adb1aa', 0.95, 0.02)
+    const pathA = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.04, 40), pathMaterial)
+    pathA.position.set(48, 0.25, -22)
+    const pathB = new THREE.Mesh(new THREE.BoxGeometry(36, 0.04, 2.5), pathMaterial)
+    pathB.position.set(48, 0.26, -22)
+    this.scene.add(pathA, pathB)
+
+    const placements: [number, number][] = [
+      [-13, -13], [0, -14], [13, -13], [-13, 13], [0, 14], [13, 13], [-14, 0], [14, 0],
+    ]
+    const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.5, 4, 6), mat('#58483b', 1, 0), placements.length)
+    const crowns = new THREE.InstancedMesh(new THREE.ConeGeometry(2.5, 6, 7), mat('#3c624f', 1, 0), placements.length)
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const scale = new THREE.Vector3(1, 1, 1)
+    const rotation = new THREE.Quaternion()
+    placements.forEach(([x, z], i) => {
+      position.set(48 + x, 2.35, -22 + z)
+      trunks.setMatrixAt(i, matrix.compose(position, rotation, scale))
+      position.y = 6.8
+      crowns.setMatrixAt(i, matrix.compose(position, rotation, scale))
+    })
+    trunks.instanceMatrix.needsUpdate = true
+    crowns.instanceMatrix.needsUpdate = true
+    this.scene.add(trunks, crowns)
+  }
+
+  private addCityWaterfront(): void {
+    const water = new THREE.Mesh(
+      new THREE.PlaneGeometry(20, 240),
+      new THREE.MeshStandardMaterial({ color: '#39727c', roughness: 0.34, metalness: 0.16 }),
+    )
+    water.rotation.x = -Math.PI / 2
+    water.position.set(-150, 0.16, -130)
+    this.scene.add(water)
+
+    const bankMaterial = mat('#777f80', 0.95, 0.04)
+    for (const x of [-160.8, -139.2]) {
+      const bank = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 242), bankMaterial)
+      bank.position.set(x, 0.42, -130)
+      bank.receiveShadow = true
+      this.scene.add(bank)
+    }
+
+    // Tek köprü bağlantısı üzerinden geçen ana cadde; gövde ve korkuluklar çarpışabilir.
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(27, 1, 14), mat('#666e72', 0.88, 0.08))
+    deck.position.set(-150, 1.15, -145)
+    deck.receiveShadow = true
+    deck.castShadow = true
+    this.scene.add(deck)
+    this.physics.addStaticBox(deck.position, new THREE.Vector3(27, 1, 14))
+    for (const z of [-152, -138]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(27, 1.2, 0.32), mat('#495258', 0.72, 0.3))
+      rail.position.set(-150, 2.25, z)
+      this.scene.add(rail)
+      this.physics.addStaticBox(rail.position, new THREE.Vector3(27, 1.2, 0.32))
+    }
   }
 
   private addBuilding(x: number, z: number, w: number, d: number, h: number, random: () => number): void {
@@ -368,10 +542,10 @@ export class Arena {
       map,
       emissiveMap,
       emissive: new THREE.Color('#ffd6a5'),
-      emissiveIntensity: 0.4,
-      color: new THREE.Color(base).lerp(new THREE.Color('#ffffff'), 0.55),
-      roughness: 0.9,
-      metalness: 0.1,
+      emissiveIntensity: 0.22,
+      color: new THREE.Color(base).lerp(new THREE.Color('#ffffff'), 0.3),
+      roughness: 0.72,
+      metalness: 0.16,
     })
     const shell = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), shellMat)
     shell.position.set(x, h / 2, z)
@@ -397,94 +571,8 @@ export class Arena {
     this.scene.add(beacon)
   }
 
-  private addCrane(x: number, z: number, mastHeight: number, jib: number, random: () => number): void {
-    const group = new THREE.Group()
-    const mast = new THREE.Mesh(new THREE.BoxGeometry(1.6, mastHeight, 1.6), mat('#e0a52b', 0.6, 0.4))
-    mast.position.y = mastHeight / 2
-    mast.castShadow = true
-    group.add(mast)
-
-    const top = new THREE.Mesh(new THREE.BoxGeometry(jib, 1.2, 1.4), mat('#e0a52b', 0.6, 0.4))
-    top.position.set(jib * 0.22, mastHeight, 0)
-    top.castShadow = true
-    group.add(top)
-
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2, 2.2), mat('#2b2f33', 0.7, 0.3))
-    cab.position.set(-1.2, mastHeight - 2.4, 0)
-    group.add(cab)
-
-    // Çelik halat ve kanca.
-    const cableLen = 14 + random() * 16
-    const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, cableLen, 4), mat('#1a1c1f', 0.6, 0.6))
-    cable.position.set(jib * 0.55, mastHeight - cableLen / 2, 0)
-    group.add(cable)
-    const hook = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.2, 0.9), mat('#d8d2c4', 0.7, 0.5))
-    hook.position.set(jib * 0.55, mastHeight - cableLen - 0.6, 0)
-    group.add(hook)
-
-    group.position.set(x, 0, z)
-    group.rotation.y = random() * Math.PI
-    this.scene.add(group)
-    this.physics.addStaticBox(new THREE.Vector3(x, mastHeight / 2, z), new THREE.Vector3(2.4, mastHeight, 2.4))
-  }
-
-  private addTower(x: number, z: number, height: number): void {
-    const group = new THREE.Group()
-    const legs = 3
-    for (let i = 0; i < legs; i += 1) {
-      const a = (i / legs) * Math.PI * 2
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.32, height, 5), mat('#b8482e', 0.7, 0.4))
-      leg.position.set(Math.cos(a) * 1.6, height / 2, Math.sin(a) * 1.6)
-      group.add(leg)
-    }
-    for (let h = 6; h < height; h += 8) {
-      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.09, 4, 12), mat('#b8482e', 0.7, 0.4))
-      ring.rotation.x = Math.PI / 2
-      ring.position.y = h
-      group.add(ring)
-    }
-    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.45, 8, 6), glowMat('#ff3b30', 2.4))
-    beacon.position.y = height
-    group.add(beacon)
-    group.position.set(x, 0, z)
-    this.scene.add(group)
-    this.physics.addStaticCylinder(new THREE.Vector3(x, height / 2, z), 2.2, height)
-  }
-
-  private addPipeRun(x: number, z: number, length: number, random: () => number): void {
-    const group = new THREE.Group()
-    for (let i = 0; i < 3; i += 1) {
-      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, length, 10), mat(PALETTE.rust, 0.85, 0.2))
-      pipe.rotation.z = Math.PI / 2
-      pipe.position.set(0, 2.4 + i * 1.6, i * 1.8)
-      pipe.castShadow = true
-      group.add(pipe)
-    }
-    for (let i = 0; i < 5; i += 1) {
-      const support = new THREE.Mesh(new THREE.BoxGeometry(0.6, 5, 4.4), mat('#5a5d60', 0.8, 0.3))
-      support.position.set(-length / 2 + (i / 4) * length, 2.5, 1.8)
-      group.add(support)
-    }
-    group.position.set(x, 0, z)
-    group.rotation.y = random() * 0.6
-    this.scene.add(group)
-    this.physics.addStaticBox(new THREE.Vector3(x, 3, z), new THREE.Vector3(length, 6, 5))
-  }
-
-  private addContainers(x: number, z: number, random: () => number): void {
-    const colors = ['#b8482e', '#2f6f8f', '#c9a227', '#3f6b4a']
-    for (let i = 0; i < 9; i += 1) {
-      const w = 6
-      const box3 = new THREE.Mesh(new THREE.BoxGeometry(w, 2.6, 2.6), mat(colors[i % colors.length], 0.8, 0.3))
-      box3.position.set(x + (random() - 0.5) * 16, 1.3 + (i > 5 ? 2.6 : 0), z + (random() - 0.5) * 14)
-      box3.rotation.y = random() > 0.5 ? 0 : Math.PI / 2
-      box3.castShadow = true
-      this.scene.add(box3)
-    }
-  }
-
   private addProps(random: () => number): void {
-    // Doğma tepesinde işaret direkleri ve bir iniş platformu.
+    // Doğma noktasında işaret direkleri ve bir iniş platformu.
     const pad = new THREE.Mesh(new THREE.CylinderGeometry(9, 9, 0.6, 24), mat('#4a4a46', 0.85, 0.15))
     pad.position.set(ARENA.spawn.x, 0.3, ARENA.spawn.z)
     pad.receiveShadow = true
@@ -507,13 +595,12 @@ export class Arena {
 
     // Uçuş rotasını kıran asılı konteynerler (çatı arası engeller).
     for (const p of [
-      { x: -20, y: 40, z: -30, r: 0.4 },
-      { x: 40, y: 56, z: -120, r: 1.2 },
-      { x: -60, y: 30, z: -110, r: 0.8 },
+      { x: -20, y: 40, z: -30 },
+      { x: 40, y: 56, z: -120 },
+      { x: -60, y: 30, z: -110 },
     ]) {
       const crate = new THREE.Mesh(new THREE.BoxGeometry(8, 4, 6), mat('#5c5a55', 0.85, 0.2))
       crate.position.set(p.x, p.y, p.z)
-      crate.rotation.y = p.r
       crate.castShadow = true
       this.scene.add(crate)
       this.physics.addStaticBox(crate.position, new THREE.Vector3(8, 4, 6))
@@ -559,22 +646,4 @@ export class Arena {
     points.frustumCulled = false
     return { points, vel }
   }
-}
-
-/** İlkel geometriyi elle yontulmuş kaya gibi göster, paylaşılan dikişleri kapalı tut. */
-function jitter(geo: THREE.BufferGeometry, random: () => number, amount: number): void {
-  const pos = geo.attributes.position as THREE.BufferAttribute
-  const offsets = new Map<string, THREE.Vector3>()
-  const v = new THREE.Vector3()
-  for (let i = 0; i < pos.count; i += 1) {
-    v.fromBufferAttribute(pos, i)
-    const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`
-    let o = offsets.get(key)
-    if (!o) {
-      o = new THREE.Vector3((random() - 0.5) * amount, (random() - 0.5) * amount * 0.6, (random() - 0.5) * amount)
-      offsets.set(key, o)
-    }
-    pos.setXYZ(i, v.x + o.x, v.y + o.y, v.z + o.z)
-  }
-  geo.computeVertexNormals()
 }
