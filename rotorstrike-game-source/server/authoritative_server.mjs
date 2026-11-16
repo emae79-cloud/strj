@@ -9,7 +9,9 @@ const MAX_ROOMS = 256
 const MAX_CLIENTS = 512
 const MAX_BYTES = 8192
 const MAX_MESSAGES_PER_SECOND = 45
-const FIRE_RATE = 6.5
+const FIRE_RATE = 8.5
+const HIT_RADIUS = 1.35
+const MAX_PITCH = 1.1
 const MAGAZINE_SIZE = 28
 const FIRE_INTERVAL_MS = 1000 / FIRE_RATE
 const RELOAD_MS = 5000
@@ -36,7 +38,7 @@ function send(ws, data) {
 function cleanPose(m) {
   const values = [m.x, m.y, m.z, m.vx, m.vy, m.vz, m.yaw, m.pitch, m.roll]
   if (!values.every(finite) || Math.abs(m.x) > MAX_POSITION || Math.abs(m.z) > MAX_POSITION || m.y < 1 || m.y > 205) return false
-  if (![m.yaw, m.pitch, m.roll].every(v => Math.abs(v) <= 201) || Math.hypot(m.vx, m.vy, m.vz) > MAX_SPEED) return false
+  if (Math.abs(m.pitch) > MAX_PITCH || Math.abs(m.yaw) > 201 || Math.abs(m.roll) > 201 || Math.hypot(m.vx, m.vy, m.vz) > MAX_SPEED) return false
   return typeof m.drone === 'string' && /^[a-z0-9]{2,8}$/.test(m.drone) && Number.isSafeInteger(m.seq) && m.seq >= 0
 }
 function raySphere(origin, direction, center, radius) {
@@ -160,7 +162,7 @@ wss.on('connection', (ws, url) => {
       let hit = false
       if (target) {
         const p = target.pose
-        const distance = raySphere(m.origin, m.direction, p, 1.35)
+        const distance = raySphere(m.origin, m.direction, p, HIT_RADIUS)
         if (distance !== null && distance <= MAX_SHOT_RANGE && now - target.poseAt <= 500) {
           target.hp = Math.max(0, target.hp - 1); hit = true
           send(target.ws, { type: 'damage', build: BUILD, room: room.code, hp: target.hp, from: seat.id })
