@@ -9,7 +9,9 @@ const MAX_ROOMS = 256
 const MAX_CLIENTS = 512
 const MAX_BYTES = 8192
 const MAX_MESSAGES_PER_SECOND = 45
-const FIRE_INTERVAL_MS = 1000 / 5.8
+const FIRE_RATE = 6.5
+const MAGAZINE_SIZE = 28
+const FIRE_INTERVAL_MS = 1000 / FIRE_RATE
 const RELOAD_MS = 5000
 const ROOM_IDLE_MS = 10 * 60_000
 const MAX_POSITION = 260
@@ -113,11 +115,11 @@ wss.on('connection', (ws, url) => {
       else {
         if (room.seats.size >= 2) { send(ws, { type: 'error', build: BUILD, room: roomCode, code: 'room_full' }); ws.close(1008, 'room full'); return }
         const seatId = room.seats.has('p1') ? 'p2' : 'p1'
-        seat = { id: seatId, token: token(), ws, name, drone: 'rq1', hp: 4, ammo: 20, reloadUntil: 0, lastFire: 0, poseAt: 0, pose: { x: 0, y: 42, z: 96, yaw: 0, pitch: 0, roll: 0 }, seq: -1, disconnected: 0 }
+        seat = { id: seatId, token: token(), ws, name, drone: 'rq1', hp: 4, ammo: MAGAZINE_SIZE, reloadUntil: 0, lastFire: 0, poseAt: 0, pose: { x: 0, y: 42, z: 96, yaw: 0, pitch: 0, roll: 0 }, seq: -1, disconnected: 0 }
         room.seats.set(seat.id, seat)
       }
       ws.room = room; ws.seat = seat.id; room.last = now
-      send(ws, { type: 'welcome', build: BUILD, room: room.code, seat: seat.id, resume: seat.token, hp: seat.hp, ammo: seat.ammo })
+      send(ws, { type: 'welcome', build: BUILD, room: room.code, seat: seat.id, resume: seat.token, hp: seat.hp, ammo: seat.ammo, fireRate: FIRE_RATE, magazineSize: MAGAZINE_SIZE, reloadMs: RELOAD_MS })
       broadcast(room)
       return
     }
@@ -149,8 +151,8 @@ wss.on('connection', (ws, url) => {
         seat.reloadUntil = deadline
         setTimeout(() => {
           if (seat.reloadUntil !== deadline || seat.ammo !== 0) return
-          seat.reloadUntil = 0; seat.ammo = 20
-          send(seat.ws, { type: 'ammo', build: BUILD, room: room.code, ammo: 20 })
+          seat.reloadUntil = 0; seat.ammo = MAGAZINE_SIZE
+          send(seat.ws, { type: 'ammo', build: BUILD, room: room.code, ammo: MAGAZINE_SIZE })
           broadcast(room)
         }, RELOAD_MS)
       }
@@ -164,7 +166,7 @@ wss.on('connection', (ws, url) => {
           send(target.ws, { type: 'damage', build: BUILD, room: room.code, hp: target.hp, from: seat.id })
           if (target.hp === 0) {
             send(target.ws, { type: 'down', build: BUILD, room: room.code, by: seat.id })
-            setTimeout(() => { target.hp = 4; target.ammo = 20; if (target.ws?.readyState === WebSocket.OPEN) { send(target.ws, { type: 'respawn', build: BUILD, room: room.code, hp: 4, ammo: 20 }); broadcast(room) } }, 2500)
+            setTimeout(() => { target.hp = 4; target.ammo = MAGAZINE_SIZE; if (target.ws?.readyState === WebSocket.OPEN) { send(target.ws, { type: 'respawn', build: BUILD, room: room.code, hp: 4, ammo: MAGAZINE_SIZE }); broadcast(room) } }, 2500)
           }
         }
       }
@@ -182,7 +184,7 @@ setInterval(() => {
   for (const [code, room] of rooms) {
     for (const [id, seat] of room.seats) {
       if (seat.disconnected && now - seat.disconnected > 60_000) room.seats.delete(id)
-      if (seat.reloadUntil && now >= seat.reloadUntil) { seat.reloadUntil = 0; seat.ammo = 20; send(seat.ws, { type: 'ammo', build: BUILD, room: room.code, ammo: 20 }); broadcast(room) }
+      if (seat.reloadUntil && now >= seat.reloadUntil) { seat.reloadUntil = 0; seat.ammo = MAGAZINE_SIZE; send(seat.ws, { type: 'ammo', build: BUILD, room: room.code, ammo: MAGAZINE_SIZE }); broadcast(room) }
     }
     if (room.seats.size === 0 && now - room.last > ROOM_IDLE_MS) rooms.delete(code)
   }
