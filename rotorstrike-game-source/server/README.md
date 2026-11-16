@@ -1,6 +1,6 @@
 # ROTOR STRIKE — Çevrimiçi sunucu
 
-Bu Node.js `ws` servisi 6 karakterli, geçici ve en çok iki pilotlu odalar açar. Oda üyeliği, 4 can, isabet başına hasar, 6,5 atış/sn tavanı ve 28 mermilik / tam 5 saniyelik doldurma sunucuda tutulur. Hareket yerelde gecikmesiz yürür; kabul edilen konumlar diğer pilota yumuşatılarak gösterilir. Bu hafif hakem modeli arkadaşlarla gündelik oyun içindir; rekabetçi/ödüllü anti-cheat sunucusu değildir.
+Bu Node.js `ws` servisi 6 karakterli, geçici ve en çok iki pilotlu odalar açar. Oda üyeliği, drone başına atış hızı/menzil profili, global 8,5 atış/sn üst sınırı, 4 can ve isabet başına hasar sunucuda tutulur. Her drone 28 mermi taşır; boş şarjör tam 5 saniyede dolar. Hareket yerelde gecikmesiz yürür; kabul edilen konumlar diğer pilota yumuşatılarak gösterilir. Bu hafif hakem modeli arkadaşlarla gündelik oyun içindir; rekabetçi/ödüllü anti-cheat sunucusu değildir.
 
 ## Render'a kurulum (manuel)
 

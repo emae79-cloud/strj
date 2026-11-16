@@ -13,17 +13,34 @@ const FIRE_RATE = 8.5
 const HIT_RADIUS = 1.35
 const MAX_PITCH = 1.1
 const MAGAZINE_SIZE = 28
-const FIRE_INTERVAL_MS = 1000 / FIRE_RATE
 const RELOAD_MS = 5000
 const ROOM_IDLE_MS = 10 * 60_000
 const MAX_POSITION = 260
 const MAX_SPEED = 180
 const MAX_SHOT_RANGE = 300
 const MAX_NICKNAME = 18
+// Keep these rules in sync with src/game/hangar.ts. The server allows the highest
+// legal weapon upgrade (level 4: 1 + 4 × 0.08), but never exceeds 8.5 shots/second.
+const DRONE_WEAPONS = {
+  rq1: { fireRate: 8.5, fireRateStat: 1, range: 280, rangeStat: 1 },
+  sk2: { fireRate: 6.5, fireRateStat: 1.05, range: 300, rangeStat: 0.9 },
+  tb3: { fireRate: 5, fireRateStat: 1, range: 240, rangeStat: 1.05 },
+  ac4: { fireRate: 5.5, fireRateStat: 1.45, range: 260, rangeStat: 1.15 },
+  vx5: { fireRate: 6.5, fireRateStat: 1.2, range: 250, rangeStat: 0.95 },
+  pr6: { fireRate: 4.5, fireRateStat: 1.32, range: 250, rangeStat: 1.2 },
+}
 const origins = new Set((process.env.ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean))
 const rooms = new Map()
 const finite = Number.isFinite
 const token = () => randomBytes(24).toString('base64url')
+
+function weaponRules(drone) {
+  const profile = DRONE_WEAPONS[drone] || DRONE_WEAPONS.rq1
+  return {
+    fireRate: Math.min(FIRE_RATE, profile.fireRate * profile.fireRateStat * 1.32),
+    range: Math.min(MAX_SHOT_RANGE, profile.range * profile.rangeStat),
+  }
+}
 
 function safeName(value) {
   if (typeof value !== 'string') return ''
@@ -39,7 +56,7 @@ function cleanPose(m) {
   const values = [m.x, m.y, m.z, m.vx, m.vy, m.vz, m.yaw, m.pitch, m.roll]
   if (!values.every(finite) || Math.abs(m.x) > MAX_POSITION || Math.abs(m.z) > MAX_POSITION || m.y < 1 || m.y > 205) return false
   if (Math.abs(m.pitch) > MAX_PITCH || Math.abs(m.yaw) > 201 || Math.abs(m.roll) > 201 || Math.hypot(m.vx, m.vy, m.vz) > MAX_SPEED) return false
-  return typeof m.drone === 'string' && /^[a-z0-9]{2,8}$/.test(m.drone) && Number.isSafeInteger(m.seq) && m.seq >= 0
+  return typeof m.drone === 'string' && Object.hasOwn(DRONE_WEAPONS, m.drone) && Number.isSafeInteger(m.seq) && m.seq >= 0
 }
 function raySphere(origin, direction, center, radius) {
   const ox = origin.x - center.x, oy = origin.y - center.y, oz = origin.z - center.z
@@ -144,7 +161,8 @@ wss.on('connection', (ws, url) => {
     if (m.type === 'fire') {
       if (!m.origin || !m.direction || ![m.origin.x,m.origin.y,m.origin.z,m.direction.x,m.direction.y,m.direction.z].every(finite)) return
       const dirLen = Math.hypot(m.direction.x,m.direction.y,m.direction.z)
-      if (Math.abs(dirLen - 1) > 0.08 || now - seat.lastFire < FIRE_INTERVAL_MS - 2 || now < seat.reloadUntil || seat.ammo <= 0) return
+      const weapon = weaponRules(seat.drone)
+      if (Math.abs(dirLen - 1) > 0.08 || now - seat.lastFire < 1000 / weapon.fireRate - 2 || now < seat.reloadUntil || seat.ammo <= 0) return
       const originDist = Math.hypot(m.origin.x-seat.pose.x,m.origin.y-seat.pose.y,m.origin.z-seat.pose.z)
       if (originDist > 4) return
       seat.lastFire = now; seat.ammo -= 1
@@ -160,10 +178,10 @@ wss.on('connection', (ws, url) => {
       }
       const target = [...room.seats.values()].find(other => other !== seat && other.ws?.readyState === WebSocket.OPEN)
       let hit = false
-      if (target) {
+      if (target && m.blocked !== true) {
         const p = target.pose
         const distance = raySphere(m.origin, m.direction, p, HIT_RADIUS)
-        if (distance !== null && distance <= MAX_SHOT_RANGE && now - target.poseAt <= 500) {
+        if (distance !== null && distance <= weapon.range && now - target.poseAt <= 500) {
           target.hp = Math.max(0, target.hp - 1); hit = true
           send(target.ws, { type: 'damage', build: BUILD, room: room.code, hp: target.hp, from: seat.id })
           if (target.hp === 0) {
