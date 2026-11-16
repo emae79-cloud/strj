@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 
-const BUILD = 'rotor-strike-pvp-v1'
+const BUILD = 'rotor-strike-pvp-v2'
 const PORT = Number(process.env.PORT || 10000)
 const HOST = process.env.HOST || '0.0.0.0'
 const MAX_ROOMS = 256
@@ -22,12 +22,12 @@ const MAX_NICKNAME = 18
 // Keep these rules in sync with src/game/hangar.ts. The server allows the highest
 // legal weapon upgrade (level 4: 1 + 4 × 0.08), but never exceeds 8.5 shots/second.
 const DRONE_WEAPONS = {
-  rq1: { fireRate: 8.5, fireRateStat: 1, range: 280, rangeStat: 1 },
-  sk2: { fireRate: 6.5, fireRateStat: 1.05, range: 300, rangeStat: 0.9 },
-  tb3: { fireRate: 5, fireRateStat: 1, range: 240, rangeStat: 1.05 },
-  ac4: { fireRate: 5.5, fireRateStat: 1.45, range: 260, rangeStat: 1.15 },
-  vx5: { fireRate: 6.5, fireRateStat: 1.2, range: 250, rangeStat: 0.95 },
-  pr6: { fireRate: 4.5, fireRateStat: 1.32, range: 250, rangeStat: 1.2 },
+  rq1: { kind: 'machinegun', fireRate: 8.5, fireRateStat: 1, range: 280, rangeStat: 1 },
+  sk2: { kind: 'pulse', fireRate: 6.5, fireRateStat: 1.05, range: 300, rangeStat: 0.9 },
+  tb3: { kind: 'cannon', fireRate: 5, fireRateStat: 1, range: 240, rangeStat: 1.05 },
+  ac4: { kind: 'autocannon', fireRate: 5.5, fireRateStat: 1.45, range: 260, rangeStat: 1.15 },
+  vx5: { kind: 'rapid-pulse', fireRate: 6.5, fireRateStat: 1.2, range: 250, rangeStat: 0.95 },
+  pr6: { kind: 'homing-missile', fireRate: 1.25, fireRateStat: 1.32, range: 250, rangeStat: 1.2 },
 }
 const origins = new Set((process.env.ALLOWED_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean))
 const rooms = new Map()
@@ -37,6 +37,7 @@ const token = () => randomBytes(24).toString('base64url')
 function weaponRules(drone) {
   const profile = DRONE_WEAPONS[drone] || DRONE_WEAPONS.rq1
   return {
+    kind: profile.kind,
     fireRate: Math.min(FIRE_RATE, profile.fireRate * profile.fireRateStat * 1.32),
     range: Math.min(MAX_SHOT_RANGE, profile.range * profile.rangeStat),
   }
@@ -165,6 +166,19 @@ wss.on('connection', (ws, url) => {
       if (Math.abs(dirLen - 1) > 0.08 || now - seat.lastFire < 1000 / weapon.fireRate - 2 || now < seat.reloadUntil || seat.ammo <= 0) return
       const originDist = Math.hypot(m.origin.x-seat.pose.x,m.origin.y-seat.pose.y,m.origin.z-seat.pose.z)
       if (originDist > 4) return
+      let homingTarget = null
+      let homingDistance = 0
+      let homingLockPosition = null
+      if (weapon.kind === 'homing-missile') {
+        if (m.blocked === true || typeof m.targetSeat !== 'string') return
+        homingTarget = room.seats.get(m.targetSeat)
+        if (!homingTarget || homingTarget === seat || homingTarget.ws?.readyState !== WebSocket.OPEN || homingTarget.hp <= 0 || now - homingTarget.poseAt > 1000) return
+        const dx = homingTarget.pose.x - m.origin.x, dy = homingTarget.pose.y - m.origin.y, dz = homingTarget.pose.z - m.origin.z
+        homingDistance = Math.hypot(dx, dy, dz)
+        const alignment = (dx * m.direction.x + dy * m.direction.y + dz * m.direction.z) / Math.max(1e-6, homingDistance * dirLen)
+        if (homingDistance > weapon.range || alignment < Math.cos(Math.PI / 12)) return
+        homingLockPosition = { x: homingTarget.pose.x, y: homingTarget.pose.y, z: homingTarget.pose.z }
+      }
       seat.lastFire = now; seat.ammo -= 1
       if (seat.ammo === 0) {
         const deadline = now + RELOAD_MS
@@ -175,6 +189,33 @@ wss.on('connection', (ws, url) => {
           send(seat.ws, { type: 'ammo', build: BUILD, room: room.code, ammo: MAGAZINE_SIZE })
           broadcast(room)
         }, RELOAD_MS)
+      }
+      if (weapon.kind === 'homing-missile' && homingTarget && homingLockPosition) {
+        const missileId = token()
+        const durationMs = Math.max(650, Math.min(1800, Math.round(homingDistance / 150 * 1000)))
+        const from = { x: m.origin.x, y: m.origin.y, z: m.origin.z }
+        const direction = { x: m.direction.x / dirLen, y: m.direction.y / dirLen, z: m.direction.z / dirLen }
+        for (const recipient of room.seats.values()) send(recipient.ws, { type: 'missile', build: BUILD, room: room.code, id: missileId, ownerSeat: seat.id, targetSeat: homingTarget.id, from, direction, durationMs })
+        send(ws, { type: 'shot', build: BUILD, room: room.code, ammo: seat.ammo, reloadMs: Math.max(0, seat.reloadUntil - now), hit: false })
+        broadcast(room)
+        setTimeout(() => {
+          const current = room.seats.get(homingTarget.id)
+          const moved = current ? Math.hypot(current.pose.x - homingLockPosition.x, current.pose.y - homingLockPosition.y, current.pose.z - homingLockPosition.z) : Infinity
+          const distanceNow = current ? Math.hypot(current.pose.x - from.x, current.pose.y - from.y, current.pose.z - from.z) : Infinity
+          const hit = current === homingTarget && current.ws?.readyState === WebSocket.OPEN && current.hp > 0 && Date.now() - current.poseAt <= 1000 && moved <= 55 && distanceNow <= weapon.range * 1.2
+          const position = hit ? { x: current.pose.x, y: current.pose.y, z: current.pose.z } : { x: from.x + direction.x * Math.min(weapon.range, homingDistance), y: from.y + direction.y * Math.min(weapon.range, homingDistance), z: from.z + direction.z * Math.min(weapon.range, homingDistance) }
+          for (const recipient of room.seats.values()) send(recipient.ws, { type: 'missileImpact', build: BUILD, room: room.code, id: missileId, position, hit })
+          if (hit) {
+            current.hp = Math.max(0, current.hp - 1)
+            send(current.ws, { type: 'damage', build: BUILD, room: room.code, hp: current.hp, from: seat.id })
+            if (current.hp === 0) {
+              send(current.ws, { type: 'down', build: BUILD, room: room.code, by: seat.id })
+              setTimeout(() => { current.hp = 4; current.ammo = MAGAZINE_SIZE; if (current.ws?.readyState === WebSocket.OPEN) { send(current.ws, { type: 'respawn', build: BUILD, room: room.code, hp: 4, ammo: MAGAZINE_SIZE }); broadcast(room) } }, 2500)
+            }
+          }
+          broadcast(room)
+        }, durationMs)
+        return
       }
       const target = [...room.seats.values()].find(other => other !== seat && other.ws?.readyState === WebSocket.OPEN)
       let hit = false

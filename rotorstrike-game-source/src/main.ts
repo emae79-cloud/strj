@@ -5,11 +5,13 @@ import { Input } from './engine/input'
 import { GameLoop } from './engine/loop'
 import { SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game } from './game/game'
-import { UPGRADES, droneById, upgradeCost, type UpgradeKey } from './game/hangar'
+import { DEFAULT_UPGRADES, DRONES, UPGRADES, droneById, upgradeCost, type UpgradeKey } from './game/hangar'
 import type { RunState } from './game/rules'
 import { TouchControls } from './ui/touch'
 import { Ui } from './ui/ui'
 import { cleanNickname, cleanRoom, MultiplayerClient, newRoomCode } from './net/multiplayer'
+
+const TEST_MODE_KEY = 'rotorstrike.localTestMode.v1'
 
 async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#game')!
@@ -24,6 +26,9 @@ async function boot(): Promise<void> {
   let onlineStarted = false
   let lockLostAt = 0
   let credited = false
+  let testMode = readTestMode()
+  let testFlight = false
+  let testDroneId = save.data.selected
 
   const applySettings = (d: SaveData) => {
     input.sensitivity = d.sensitivity
@@ -36,19 +41,27 @@ async function boot(): Promise<void> {
     }
   }
 
-  const startRun = (tutorial: boolean, online = false) => {
+  const startRun = (tutorial: boolean, online = false, droneId?: string, trial = false) => {
     if (!game) return
+    if (trial && (!testMode || online)) return
     audio.unlock()
     audio.startMusic()
     credited = false
     const d = save.data
+    const runningDrone = trial ? (droneId ?? d.selected) : d.selected
+    testFlight = trial
+    if (trial) {
+      testDroneId = runningDrone
+      onlineStarted = false
+      net?.disconnect()
+    }
     game.setOnlineHandlers(online && net ? {
       name: d.nickname,
       pose: pose => net?.sendPose(pose),
-      fire: (origin, direction) => net?.fire(origin, direction),
+      fire: (origin, direction, blocked, targetSeat) => net?.fire(origin, direction, blocked, targetSeat),
     } : null)
-    game.start(d.selected, d.upgrades, tutorial && !online, d.stabilize, online)
-    ui.setDrone(droneById(d.selected).name)
+    game.start(runningDrone, trial ? DEFAULT_UPGRADES : d.upgrades, tutorial && !online && !trial, d.stabilize, online)
+    ui.setDrone(droneById(runningDrone).name)
     ui.show('hud')
     loop.resetAccumulator()
     input.lockPointer()
@@ -70,6 +83,14 @@ async function boot(): Promise<void> {
   }
 
   const quit = () => {
+    if (testFlight) {
+      testFlight = false
+      game?.toTitle()
+      audio.stopMusic()
+      ui.show('hangar')
+      input.unlockPointer()
+      return
+    }
     onlineStarted = false
     net?.disconnect()
     game?.toTitle()
@@ -131,17 +152,30 @@ async function boot(): Promise<void> {
     void net?.connect(room, nickname)
   }
 
+  const setTestMode = (enabled: boolean) => {
+    testMode = enabled
+    try {
+      if (enabled) localStorage.setItem(TEST_MODE_KEY, '1')
+      else localStorage.removeItem(TEST_MODE_KEY)
+    } catch { /* test mode remains session-local if storage is blocked */ }
+    ui?.setTestMode(enabled)
+  }
+
   ui = new Ui(i18n, save, audio, input, {
     play: () => startRun(!save.data.tutorialDone),
     onlineCreate: nickname => onlineConnect(nickname, newRoomCode()),
     onlineJoin: (nickname, room) => onlineConnect(nickname, room),
+    tryDrone: id => {
+      if (testMode) startRun(false, false, id, true)
+    },
+    toggleTestMode: () => setTestMode(!testMode),
     onlineCancel: () => {
       onlineStarted = false
       net?.disconnect()
       const url = new URL(location.href); url.searchParams.delete('room'); history.replaceState(null, '', url)
       ui?.onlineStatus('idle')
     },
-    restart: () => startRun(false),
+    restart: () => testFlight ? startRun(false, false, testDroneId, true) : startRun(false),
     resume,
     quit,
     settings: patch => {
@@ -151,10 +185,11 @@ async function boot(): Promise<void> {
       if (qualityChanged) game?.setQuality(save.data.quality)
     },
     buy: id => {
-      const spec = droneById(id)
+      const spec = DRONES.find(drone => drone.id === id)
+      if (!spec) return
       const d = save.data
-      if (d.owned.includes(id) || d.credits < spec.price) return
-      save.update({ credits: d.credits - spec.price, owned: [...d.owned, id], selected: id })
+      if (d.owned.includes(spec.id) || d.credits < spec.price) return
+      save.update({ credits: d.credits - spec.price, owned: [...d.owned, spec.id], selected: spec.id })
       audio.play('buy')
       ui.renderHangar()
       ui.renderTitle()
@@ -183,6 +218,18 @@ async function boot(): Promise<void> {
       game?.setStabilize(on)
     },
   })
+  ui.setTestMode(testMode)
+  const wordmarkTaps: number[] = []
+  document.querySelector('.wordmark')?.addEventListener('click', () => {
+    const now = performance.now()
+    while (wordmarkTaps.length && now - wordmarkTaps[0] > 1600) wordmarkTaps.shift()
+    wordmarkTaps.push(now)
+    if (wordmarkTaps.length >= 5) {
+      wordmarkTaps.length = 0
+      setTestMode(!testMode)
+      audio.play('ui')
+    }
+  })
   ui.show('boot')
   applySettings(save.data)
 
@@ -209,8 +256,18 @@ async function boot(): Promise<void> {
     banner: text => ui.banner(text),
     end: run => {
       input.unlockPointer()
-      bank(run)
-      window.setTimeout(() => ui.showResults(run), 1100)
+      if (testFlight) {
+        window.setTimeout(() => {
+          if (!testFlight) return
+          testFlight = false
+          game?.toTitle()
+          audio.stopMusic()
+          ui.show('hangar')
+        }, 1100)
+      } else {
+        bank(run)
+        window.setTimeout(() => ui.showResults(run), 1100)
+      }
     },
     t: (key, vars) => i18n.t(key, vars),
   })
@@ -266,6 +323,14 @@ function readSave(): string | null {
     return localStorage.getItem(SAVE_KEY)
   } catch {
     return null
+  }
+}
+
+function readTestMode(): boolean {
+  try {
+    return localStorage.getItem(TEST_MODE_KEY) === '1'
+  } catch {
+    return false
   }
 }
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { Audio } from '../engine/audio'
+import type { Audio, Sfx } from '../engine/audio'
 import type { Input } from '../engine/input'
 import { Physics, RAPIER } from '../engine/physics'
 import type { Renderer } from '../engine/renderer'
@@ -9,7 +9,7 @@ import { CockpitCamera } from './camera'
 import { CONFIG } from './config'
 import { Enemies, ENEMY_TYPES, type Enemy, type EnemyFire, type EnemyType } from './enemies'
 import { Effects } from './fx'
-import { droneById, resolveLoadout, type DroneSpec, type UpgradeLevels } from './hangar'
+import { droneById, resolveLoadout, type DroneSpec, type UpgradeLevels, type WeaponKind } from './hangar'
 import { PlayerDrone, type FlightEvent } from './player'
 import { buildDrone, type DroneVisual } from './models'
 import type { PilotPose } from '../net/multiplayer'
@@ -40,6 +40,9 @@ export type HudState = {
   magazineSize: number
   reloadRemaining: number
   reloadDuration: number
+  weaponName: string
+  aimLocked: boolean
+  aimLockScreen: { x: number; y: number } | null
   credits: number
   score: number
   stabilizing: boolean
@@ -57,7 +60,29 @@ export type GameHooks = {
 }
 
 type OnlinePlayer = { seat: string; name: string; drone: string; hp: number; ammo: number; x: number; y: number; z: number; vx: number; vy: number; vz: number; yaw: number; pitch: number; roll: number }
-type RemotePilot = { root: THREE.Group; visual: DroneVisual; label: THREE.Sprite; target: THREE.Vector3; velocity: THREE.Vector3; receivedAt: number; yaw: number; pitch: number; roll: number }
+type RemotePilot = { seat: string; root: THREE.Group; visual: DroneVisual; label: THREE.Sprite; target: THREE.Vector3; velocity: THREE.Vector3; receivedAt: number; yaw: number; pitch: number; roll: number }
+type AimTarget = { id: string; position: THREE.Vector3; enemy?: Enemy; remote?: RemotePilot }
+type GuidedMissileVisual = { mesh: THREE.Mesh; position: THREE.Vector3; direction: THREE.Vector3; targetId: string | null; age: number; online: boolean }
+
+const WEAPON_AUDIO: Record<WeaponKind, Sfx> = {
+  machinegun: 'shot', pulse: 'shotPulse', cannon: 'shotCannon', autocannon: 'shotAutoCannon',
+  'rapid-pulse': 'shotRapidPulse', 'homing-missile': 'missileLaunch',
+}
+const TRACER_STYLE: Record<WeaponKind, { speed: number; life: number; width: number; length: number }> = {
+  machinegun: { speed: 360, life: 0.42, width: 1, length: 1 },
+  pulse: { speed: 430, life: 0.34, width: 0.58, length: 1.55 },
+  cannon: { speed: 280, life: 0.52, width: 2.05, length: 1.5 },
+  autocannon: { speed: 330, life: 0.46, width: 1.45, length: 1.25 },
+  'rapid-pulse': { speed: 520, life: 0.31, width: 0.52, length: 1.32 },
+  'homing-missile': { speed: 150, life: 1.4, width: 2.2, length: 1.8 },
+}
+const MISSILE_AXIS = new THREE.Vector3(0, 1, 0)
+
+function isVector3Value(value: unknown): value is { x: number; y: number; z: number } {
+  if (!value || typeof value !== 'object') return false
+  const point = value as Record<string, unknown>
+  return [point.x, point.y, point.z].every(v => typeof v === 'number' && Number.isFinite(v))
+}
 
 /**
  * Tek oynanabilir sahne: arena, fizik, oyuncu dronu, kamera, düşmanlar ve koşu kurallarını
@@ -93,7 +118,12 @@ export class Game {
   private onlineSeat = ''
   private onlinePoseTimer = 0
   private readonly remotePilots = new Map<string, RemotePilot>()
-  private onlineHandlers: { name: string; pose(pose: Omit<PilotPose, 'type' | 'build' | 'seat' | 'seq' | 'name'>): void; fire(origin: THREE.Vector3, direction: THREE.Vector3): void } | null = null
+  private aimTarget: AimTarget | null = null
+  private onlineHandlers: { name: string; pose(pose: Omit<PilotPose, 'type' | 'build' | 'seat' | 'seq' | 'name'>): void; fire(origin: THREE.Vector3, direction: THREE.Vector3, blocked: boolean, targetSeat?: string): void } | null = null
+  private readonly missiles = new Map<string, GuidedMissileVisual>()
+  private missileSequence = 0
+  private readonly missileGeometry = new THREE.ConeGeometry(0.14, 0.86, 5)
+  private readonly missileMaterial = new THREE.MeshStandardMaterial({ color: '#e8c15c', emissive: '#ff561d', emissiveIntensity: 0.75, metalness: 0.35, roughness: 0.55 })
 
   constructor(
     private readonly renderer: Renderer,
@@ -133,10 +163,12 @@ export class Game {
     this.onlinePoseTimer = 0
     this.onlineSeat = ''
     this.clearRemotePilots()
+    this.aimTarget = null
     this.mountPlayer()
     this.enemies.clear()
     this.tracers.clear()
     this.fx.clear()
+    this.clearMissiles()
     this.run = createRun()
     this.spawnedThisWave = 0
     this.spawnTimer = online ? 9999 : 0.8
@@ -180,13 +212,13 @@ export class Game {
           const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }))
           label.scale.set(5, 0.94, 1); label.position.y = 2.1
           root.add(label); this.arena.scene.add(root)
-        remote = { root, visual, label, target: new THREE.Vector3(p.x!, p.y!, p.z!), velocity: new THREE.Vector3(), receivedAt: performance.now(), yaw: p.yaw ?? 0, pitch: p.pitch ?? 0, roll: p.roll ?? 0 }
+        remote = { seat: p.seat, root, visual, label, target: new THREE.Vector3(p.x!, p.y!, p.z!), velocity: new THREE.Vector3(), receivedAt: performance.now(), yaw: p.yaw ?? 0, pitch: THREE.MathUtils.clamp(p.pitch ?? 0, CONFIG.camera.minPitch, CONFIG.camera.maxPitch), roll: p.roll ?? 0 }
           this.remotePilots.set(p.seat, remote)
         }
         remote.target.set(p.x!, p.y!, p.z!)
         remote.velocity.set(p.vx ?? 0, p.vy ?? 0, p.vz ?? 0)
         remote.receivedAt = performance.now()
-        remote.yaw = p.yaw ?? remote.yaw; remote.pitch = p.pitch ?? remote.pitch; remote.roll = p.roll ?? remote.roll
+        remote.yaw = p.yaw ?? remote.yaw; remote.pitch = THREE.MathUtils.clamp(p.pitch ?? remote.pitch, CONFIG.camera.minPitch, CONFIG.camera.maxPitch); remote.roll = p.roll ?? remote.roll
       }
       for (const seat of this.remotePilots.keys()) if (!seen.has(seat)) this.removeRemotePilot(seat)
       const own = (message.players as OnlinePlayer[]).find(p => p?.seat === this.onlineSeat)
@@ -202,6 +234,15 @@ export class Game {
     }
     if (message.type === 'down') { this.run.hp = 0; this.hooks.banner('DRONE DÜŞÜRÜLDÜ') }
     if (message.type === 'respawn' && this.player) { this.run.hp = 4; this.player.teleport(ARENA.spawn, 0, 0); this.invuln = 2 }
+    if (message.type === 'missile' && typeof message.id === 'string' && typeof message.targetSeat === 'string' && isVector3Value(message.from) && isVector3Value(message.direction)) {
+      const from = message.from, direction = message.direction
+      this.spawnMissile(message.id, new THREE.Vector3(from.x, from.y, from.z), new THREE.Vector3(direction.x, direction.y, direction.z), `seat:${message.targetSeat}`, true)
+      if (message.ownerSeat !== this.onlineSeat) this.audio.play('missileLaunch')
+    }
+    if (message.type === 'missileImpact' && typeof message.id === 'string' && isVector3Value(message.position)) {
+      const position = message.position
+      this.finishMissile(message.id, new THREE.Vector3(position.x, position.y, position.z))
+    }
   }
 
   private removeRemotePilot(seat: string): void {
@@ -216,7 +257,10 @@ export class Game {
   private clearRemotePilots(): void { for (const seat of this.remotePilots.keys()) this.removeRemotePilot(seat) }
 
   pause(): void {
-    if (this.mode === 'playing') this.mode = 'paused'
+    if (this.mode === 'playing') {
+      this.mode = 'paused'
+      this.aimTarget = null
+    }
   }
 
   resume(): void {
@@ -230,6 +274,7 @@ export class Game {
     this.mode = 'attract'
     this.online = false
     this.onlineSeat = ''
+    this.aimTarget = null
     this.onlineHandlers = null
     this.clearRemotePilots()
     this.hooks.hint(null)
@@ -268,6 +313,9 @@ export class Game {
       magazineSize: CONFIG.weapon.magazineSize,
       reloadRemaining: player?.reloadRemaining ?? 0,
       reloadDuration: CONFIG.weapon.reloadSeconds,
+      weaponName: this.loadout.weaponName,
+      aimLocked: this.aimTarget !== null,
+      aimLockScreen: this.aimTarget ? this.project(this.aimTarget.position) : null,
       credits: this.run.credits,
       score: this.run.score,
       stabilizing: this.stabilize,
@@ -311,6 +359,7 @@ export class Game {
     const stabilizeToggle = this.input.consume('stabilize')
 
     if (!playing || !this.player || !this.cam) {
+      this.aimTarget = null
       this.arena.update(dt, this.player?.position ?? ARENA.spawn)
       return
     }
@@ -320,10 +369,12 @@ export class Game {
     }
 
     this.player.look(look.x, look.y)
+    this.updateAimLock()
     const events: FlightEvent[] = []
+    const homingLockReady = this.spec.weapon.kind !== 'homing-missile' || (this.online ? Boolean(this.aimTarget?.remote) : Boolean(this.aimTarget))
     this.player.step(
       dt,
-      { moveX, moveY, climb: (climb ? 1 : 0) - (descend ? 1 : 0), fire, stabilize: this.stabilize },
+      { moveX, moveY, climb: (climb ? 1 : 0) - (descend ? 1 : 0), fire: fire && homingLockReady, stabilize: this.stabilize },
       events,
     )
 
@@ -338,13 +389,18 @@ export class Game {
     const fires: EnemyFire[] = []
     if (!this.online) this.enemies.step(dt, pos, this.player.velocity, this.run.wave, fires)
     for (const shot of fires) this.onEnemyFire(shot, pos)
+    this.updateMissiles(dt)
 
     if (this.online) {
       this.onlinePoseTimer += dt
       if (this.onlinePoseTimer >= 0.05 && this.onlineHandlers) {
         this.onlinePoseTimer = 0
         const p = this.player
-        this.onlineHandlers.pose({ drone: this.spec.id, x: pos.x, y: pos.y, z: pos.z, vx: p.velocity.x, vy: p.velocity.y, vz: p.velocity.z, yaw: p.yaw, pitch: p.pitch, roll: p.roll, hp: this.run.hp, ammo: p.ammo })
+        this.onlineHandlers.pose({
+          drone: this.spec.id, x: pos.x, y: pos.y, z: pos.z,
+          vx: p.velocity.x, vy: p.velocity.y, vz: p.velocity.z,
+          yaw: p.yaw, pitch: p.pitch, roll: p.roll, hp: this.run.hp, ammo: p.ammo,
+        })
       }
     } else this.run = tick(this.run, dt)
     if (this.run.wave !== this.lastWave) {
@@ -428,42 +484,104 @@ export class Game {
     }
   }
 
+  private updateAimLock(): void {
+    const player = this.player
+    if (!player || this.mode !== 'playing') {
+      this.aimTarget = null
+      return
+    }
+
+    const origin = player.position
+    const forward = player.forward().normalize()
+    const candidates: AimTarget[] = []
+    for (const enemy of this.enemies.list) {
+      candidates.push({ id: `enemy:${enemy.root.uuid}`, position: enemy.pos, enemy })
+    }
+    for (const [seat, remote] of this.remotePilots) {
+      candidates.push({ id: `online:${seat}`, position: remote.target, remote })
+    }
+
+    const previousId = this.aimTarget?.id
+    let best: AimTarget | null = null
+    let bestScore = -Infinity
+    for (const candidate of candidates) {
+      const offset = candidate.position.clone().sub(origin)
+      const distance = offset.length()
+      if (distance < 5 || distance > this.loadout.range) continue
+      const direction = offset.multiplyScalar(1 / distance)
+      const alignment = direction.dot(forward)
+      const retained = candidate.id === previousId
+      const cone = THREE.MathUtils.degToRad(retained ? 11 : 6)
+      if (alignment < Math.cos(cone)) continue
+
+      // Binalar kilidi de, tek oyunculu atışı da engeller; aynı yerel harita online'da kullanılır.
+      this.ray.origin = { x: origin.x, y: origin.y, z: origin.z }
+      this.ray.dir = { x: direction.x, y: direction.y, z: direction.z }
+      const blocker = this.physics.world.castRay(this.ray, distance, true, undefined, undefined, player.collider)
+      if (blocker && blocker.timeOfImpact < distance - CONFIG.drone.hitRadius) continue
+
+      const score = alignment + (retained ? 0.003 : 0)
+      if (score > bestScore) {
+        best = candidate
+        bestScore = score
+      }
+    }
+    this.aimTarget = best
+  }
+
   private shoot(): void {
     const player = this.player
     const cam = this.cam
     if (!player || !cam) return
     const origin = cam.camera.getWorldPosition(new THREE.Vector3())
     const forward = cam.camera.getWorldDirection(new THREE.Vector3())
-    const dir = applySpread(forward, CONFIG.weapon.spread)
+    const target = this.aimTarget
+    if (target) forward.copy(target.position).sub(origin).normalize()
+    const dir = applySpread(forward, this.loadout.spread * (target ? 0.15 : 1))
     const range = this.loadout.range
-
-    cam.addKick()
-    player.addRecoil(CONFIG.camera.recoil)
-    this.audio.play('shot')
-
-    // Dünya geometrisi: duvarların arkasındaki düşmanları vurmayı engeller.
+    const kind = this.loadout.weaponKind
     this.ray.origin = { x: origin.x, y: origin.y, z: origin.z }
     this.ray.dir = { x: dir.x, y: dir.y, z: dir.z }
     const worldHit = this.physics.world.castRay(this.ray, range, true, undefined, undefined, player.collider)
     const worldDist = worldHit ? worldHit.timeOfImpact : Infinity
 
+    cam.addKick()
+    player.addRecoil(CONFIG.camera.recoil * (kind === 'cannon' ? 1.35 : kind === 'homing-missile' ? 1.65 : 1))
+    this.audio.play(WEAPON_AUDIO[kind])
+
+    if (kind === 'homing-missile') {
+      if (this.online) {
+        const targetSeat = target?.remote?.seat
+        if (!targetSeat || !target) return
+        const blocked = Boolean(worldHit && worldDist < target.position.distanceTo(origin) - 0.01)
+        this.onlineHandlers?.fire(origin, dir, blocked, targetSeat)
+      } else {
+        this.spawnMissile(`solo-${++this.missileSequence}`, origin.clone().addScaledVector(dir, 1.2), dir, target?.id ?? null, false)
+      }
+      return
+    }
+
     let best: { enemy: Enemy; dist: number } | null = null
     for (const enemy of this.enemies.list) {
-      const t = raySphere(origin, dir, enemy.pos, 1.15 * enemy.spec.scale)
+      const t = raySphere(origin, dir, enemy.pos, CONFIG.drone.hitRadius * enemy.spec.scale)
       if (t !== null && t < worldDist && (!best || t < best.dist)) best = { enemy, dist: t }
     }
 
     const end = origin.clone().addScaledVector(dir, Math.min(best?.dist ?? worldDist, range))
-    this.tracers.spawn(origin.clone().addScaledVector(dir, 1.1), dir, '#ffd35c', 360, 0.42)
+    const tracer = TRACER_STYLE[kind]
+    this.tracers.spawn(origin.clone().addScaledVector(dir, 1.1), dir, this.loadout.tracerColor, tracer.speed, tracer.life, tracer.width, tracer.length)
 
     if (this.online) {
-      this.onlineHandlers?.fire(origin, dir)
+      const remoteTarget = target?.remote?.target ?? [...this.remotePilots.values()][0]?.target
+      const targetDist = remoteTarget ? raySphere(origin, dir, remoteTarget, CONFIG.drone.hitRadius) : null
+      const blocked = Boolean(worldHit && worldDist < (targetDist ?? range) - 0.01)
+      this.onlineHandlers?.fire(origin, dir, blocked)
       return
     }
 
     if (best) {
       const dead = this.enemies.damage(best.enemy, CONFIG.weapon.damage)
-      this.fx.burst(end, '#ffd35c', 8, 5)
+      this.fx.burst(end, this.loadout.tracerColor, kind === 'cannon' || kind === 'autocannon' ? 14 : 8, kind === 'cannon' ? 7 : 5)
       this.audio.play('hit')
       const hit = registerHit(this.run)
       this.run = hit.state
@@ -478,6 +596,7 @@ export class Game {
     const credits = Math.round(ENEMY_TYPES[enemy.spec.type].credits * (1 + (this.run.wave - 1) * 0.08))
     const result = registerKill(this.run, ENEMY_TYPES[enemy.spec.type].credits)
     this.run = result.state
+    if (this.aimTarget?.enemy === enemy) this.aimTarget = null
     this.enemies.remove(enemy)
     this.fx.burst(enemy.pos, '#ff8a3c', 40, 9)
     this.fx.burst(enemy.pos, '#ffe08a', 18, 6)
@@ -489,12 +608,13 @@ export class Game {
   }
 
   private onEnemyFire(shot: EnemyFire, playerPos: THREE.Vector3): void {
-    const dir = new THREE.Vector3().subVectors(playerPos, shot.from).normalize()
     const hit = Math.random() < shot.hitChance
     const aim = hit ? playerPos.clone() : playerPos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 16, (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 16))
     const shotDir = new THREE.Vector3().subVectors(aim, shot.from).normalize()
-    this.tracers.spawn(shot.from, shotDir, '#ff6a3d', 300, 0.5)
-    this.audio.play('hit')
+    const enemySound: Sfx = shot.enemy.spec.type === 'agir' ? 'shotCannon' : shot.enemy.spec.type === 'keskin' ? 'shotPulse' : 'shot'
+    const enemyColor = shot.enemy.spec.type === 'agir' ? '#ff8f3c' : shot.enemy.spec.type === 'keskin' ? '#ffd23f' : '#ff4b3a'
+    this.tracers.spawn(shot.from, shotDir, enemyColor, shot.enemy.spec.type === 'keskin' ? 420 : 300, 0.5, shot.enemy.spec.type === 'agir' ? 1.5 : 1, 1.2)
+    this.audio.play(enemySound)
     if (!hit || this.invuln > 0) return
 
     const result = damagePlayer(this.run)
@@ -506,7 +626,88 @@ export class Game {
     this.hooks.popup(`-1`, this.project(playerPos), 'hurt')
     if (this.cam) this.cam.addShake(0.85)
     this.fx.burst(playerPos, '#ff4d3d', 16, 5)
-    void dir
+  }
+
+  private spawnMissile(id: string, from: THREE.Vector3, direction: THREE.Vector3, targetId: string | null, online: boolean): void {
+    if (this.missiles.has(id)) return
+    const unitDirection = direction.clone().normalize()
+    const mesh = new THREE.Mesh(this.missileGeometry, this.missileMaterial)
+    mesh.position.copy(from)
+    mesh.quaternion.setFromUnitVectors(MISSILE_AXIS, unitDirection)
+    mesh.castShadow = false
+    mesh.receiveShadow = false
+    this.arena.scene.add(mesh)
+    this.missiles.set(id, { mesh, position: from.clone(), direction: unitDirection, targetId, age: 0, online })
+    this.audio.play('missileFlight')
+  }
+
+  private updateMissiles(dt: number): void {
+    for (const [id, missile] of this.missiles) {
+      missile.age += dt
+      const target = this.missileTargetPosition(missile.targetId)
+      if (target) {
+        const desired = target.clone().sub(missile.position)
+        if (desired.lengthSq() > 1e-5) missile.direction.lerp(desired.normalize(), 1 - Math.exp(-5.5 * dt)).normalize()
+      }
+      const travel = 150 * dt
+      if (!missile.online) {
+        this.ray.origin = { x: missile.position.x, y: missile.position.y, z: missile.position.z }
+        this.ray.dir = { x: missile.direction.x, y: missile.direction.y, z: missile.direction.z }
+        const wall = this.physics.world.castRay(this.ray, travel, true, undefined, undefined, this.player?.collider)
+        const wallDistance = wall ? wall.timeOfImpact : travel
+        let best: { enemy: Enemy; distance: number } | null = null
+        for (const enemy of this.enemies.list) {
+          const distance = raySphere(missile.position, missile.direction, enemy.pos, CONFIG.drone.hitRadius * enemy.spec.scale + 0.8)
+          if (distance !== null && distance <= wallDistance && (!best || distance < best.distance)) best = { enemy, distance }
+        }
+        if (best) {
+          const impact = missile.position.clone().addScaledVector(missile.direction, best.distance)
+          this.finishMissile(id, impact, best.enemy)
+          continue
+        }
+        if (wall && wall.timeOfImpact <= travel) {
+          const impact = missile.position.clone().addScaledVector(missile.direction, wall.timeOfImpact)
+          this.finishMissile(id, impact)
+          continue
+        }
+      }
+      missile.position.addScaledVector(missile.direction, travel)
+      missile.mesh.position.copy(missile.position)
+      missile.mesh.quaternion.setFromUnitVectors(MISSILE_AXIS, missile.direction)
+      if (missile.age > 2.5) this.removeMissile(id)
+    }
+  }
+
+  private missileTargetPosition(targetId: string | null): THREE.Vector3 | null {
+    if (!targetId) return null
+    if (targetId.startsWith('enemy:')) return this.enemies.list.find(enemy => `enemy:${enemy.root.uuid}` === targetId)?.pos ?? null
+    const seat = targetId.startsWith('seat:') ? targetId.slice(5) : targetId.startsWith('online:') ? targetId.slice(7) : ''
+    if (!seat) return null
+    if (seat === this.onlineSeat) return this.player?.position ?? null
+    return this.remotePilots.get(seat)?.target ?? null
+  }
+
+  private finishMissile(id: string, at: THREE.Vector3, enemy?: Enemy): void {
+    this.removeMissile(id)
+    this.audio.play('missileImpact')
+    this.fx.burst(at, '#ff8a36', enemy ? 24 : 16, enemy ? 11 : 8)
+    if (!enemy) return
+    const dead = this.enemies.damage(enemy, 1)
+    const hit = registerHit(this.run)
+    this.run = hit.state
+    this.hooks.popup(`+${hit.credits}`, this.project(at), 'score')
+    if (dead) this.killEnemy(enemy)
+  }
+
+  private removeMissile(id: string): void {
+    const missile = this.missiles.get(id)
+    if (!missile) return
+    this.arena.scene.remove(missile.mesh)
+    this.missiles.delete(id)
+  }
+
+  private clearMissiles(): void {
+    for (const id of this.missiles.keys()) this.removeMissile(id)
   }
 
   private updateWaves(dt: number, playerPos: THREE.Vector3): void {

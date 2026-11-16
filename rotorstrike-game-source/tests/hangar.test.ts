@@ -32,6 +32,20 @@ describe('dron kataloğu', () => {
     expect(prices.every(p => p > 0)).toBe(true)
   })
 
+  it('her drone farklı silah karakteri taşır', () => {
+    expect(new Set(DRONES.map(d => d.weapon.name)).size).toBe(DRONES.length)
+    expect(new Set(DRONES.map(d => d.weapon.kind)).size).toBe(DRONES.length)
+    expect(new Set(DRONES.map(d => d.weapon.tracerColor)).size).toBe(DRONES.length)
+    expect(new Set(DRONES.map(d => d.weapon.spread)).size).toBe(DRONES.length)
+    expect(new Set(DRONES.map(d => d.weapon.fireRate * d.stats.fireRate)).size).toBe(DRONES.length)
+    expect(new Set(DRONES.map(d => d.weapon.range * d.stats.range)).size).toBe(DRONES.length)
+    expect(CONFIG.drone.hp).toBe(4)
+    expect(CONFIG.weapon.magazineSize).toBe(28)
+    expect(CONFIG.weapon.reloadSeconds).toBe(5)
+    expect(DRONES.at(-1)?.weapon.kind).toBe('homing-missile')
+    expect(DRONES.at(-1)!.weapon.fireRate).toBeLessThan(2)
+  })
+
   it('bilinmeyen kimlik ilk drona düşer', () => {
     expect(droneById('yok').id).toBe(DRONES[0].id)
   })
@@ -69,6 +83,9 @@ describe('yükseltmeler', () => {
     const tuned = resolveLoadout(fast, { ...DEFAULT_UPGRADES, motor: 2 }, base)
     expect(plain.maxSpeed).toBeCloseTo(base.maxSpeed * fast.stats.speed)
     expect(tuned.maxSpeed).toBeGreaterThan(plain.maxSpeed)
-    expect(plain.fireRate).toBeCloseTo(base.fireRate * fast.stats.fireRate)
+    expect(plain.fireRate).toBeCloseTo(Math.min(base.fireRate, fast.weapon.fireRate * fast.stats.fireRate))
+    const weaponTuned = resolveLoadout(fast, { ...DEFAULT_UPGRADES, weapon: 2 }, base)
+    expect(weaponTuned.fireRate).toBeGreaterThan(plain.fireRate)
+    expect(weaponTuned.fireRate).toBeLessThanOrEqual(base.fireRate)
   })
 })

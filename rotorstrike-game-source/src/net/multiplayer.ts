@@ -1,4 +1,4 @@
-export const BUILD = 'rotor-strike-pvp-v1'
+export const BUILD = 'rotor-strike-pvp-v2'
 
 export type PilotPose = {
   type: 'pose'
@@ -96,9 +96,9 @@ export class MultiplayerClient {
     this.send({ type: 'pose', build: BUILD, seq: ++this.seq, ...pose })
   }
 
-  fire(origin: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }): void {
+  fire(origin: { x: number; y: number; z: number }, direction: { x: number; y: number; z: number }, blocked = false, targetSeat?: string): void {
     if (this.state !== 'online') return
-    this.send({ type: 'fire', build: BUILD, origin, direction, at: Date.now() })
+    this.send({ type: 'fire', build: BUILD, origin, direction, blocked, ...(targetSeat ? { targetSeat } : {}), at: Date.now() })
   }
 
   disconnect(): void {

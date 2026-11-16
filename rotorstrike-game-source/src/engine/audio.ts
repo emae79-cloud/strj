@@ -4,7 +4,7 @@
  *
  * Ses dosyası yoktur: bütün efektler sentezlenir, böylece yükleme gecikmesi ve telif sorunu olmaz.
  */
-export type Sfx = 'shot' | 'hit' | 'kill' | 'hurt' | 'ui' | 'wave' | 'alarm' | 'buy' | 'deny' | 'reload' | 'reloadComplete'
+export type Sfx = 'shot' | 'shotPulse' | 'shotCannon' | 'shotAutoCannon' | 'shotRapidPulse' | 'missileLaunch' | 'missileFlight' | 'missileImpact' | 'hit' | 'kill' | 'hurt' | 'ui' | 'wave' | 'alarm' | 'buy' | 'deny' | 'reload' | 'reloadComplete'
 
 export class Audio {
   readonly ctx: AudioContext
@@ -97,6 +97,37 @@ export class Audio {
         this.tone(180, 60, 0.1, 'square', 0.16)
         break
       }
+      case 'shotPulse':
+        this.tone(1320, 380, 0.13, 'sine', 0.18)
+        this.tone(610, 940, 0.08, 'triangle', 0.09, 0.025)
+        break
+      case 'shotCannon':
+        this.burst(0.18, 'lowpass', 720, 0.56, 0.8)
+        this.tone(150, 46, 0.16, 'sawtooth', 0.22)
+        break
+      case 'shotAutoCannon':
+        this.burst(0.065, 'bandpass', 1350, 0.32, 0.9)
+        this.tone(260, 125, 0.075, 'square', 0.14)
+        this.tone(210, 110, 0.07, 'square', 0.1, 0.045)
+        break
+      case 'shotRapidPulse':
+        this.tone(1850, 720, 0.065, 'triangle', 0.13)
+        this.burst(0.04, 'highpass', 4800, 0.1, 0.8)
+        break
+      case 'missileLaunch':
+        this.burst(0.42, 'bandpass', 980, 0.28, 0.75)
+        this.tone(138, 42, 0.4, 'sawtooth', 0.2)
+        this.tone(650, 170, 0.32, 'triangle', 0.09, 0.04)
+        break
+      case 'missileFlight':
+        this.tone(760, 260, 0.34, 'sawtooth', 0.08)
+        this.burst(0.22, 'highpass', 1900, 0.1, 0.8)
+        break
+      case 'missileImpact':
+        this.burst(0.36, 'lowpass', 560, 0.62, 0.8)
+        this.tone(112, 30, 0.44, 'sawtooth', 0.26)
+        this.burst(0.18, 'highpass', 2600, 0.16, 1)
+        break
       case 'hit':
         this.tone(1480, 1180, 0.05, 'square', 0.16)
         this.burst(0.05, 'bandpass', 3200, 0.18, 2)

@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-type Tracer = { pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; max: number; color: THREE.Color }
+type Tracer = { pos: THREE.Vector3; dir: THREE.Vector3; speed: number; life: number; max: number; color: THREE.Color; width: number; length: number }
 
 const MAX = 160
 const dummy = new THREE.Object3D()
@@ -25,7 +25,7 @@ export class Tracers {
     this.mesh.setColorAt(0, new THREE.Color())
   }
 
-  spawn(from: THREE.Vector3, dir: THREE.Vector3, color: THREE.ColorRepresentation, speed = 320, life = 0.55): void {
+  spawn(from: THREE.Vector3, dir: THREE.Vector3, color: THREE.ColorRepresentation, speed = 320, life = 0.55, width = 1, length = 1): void {
     if (this.tracers.length >= MAX) this.tracers.shift()
     this.tracers.push({
       pos: from.clone(),
@@ -34,6 +34,8 @@ export class Tracers {
       life,
       max: life,
       color: new THREE.Color(color),
+      width,
+      length,
     })
   }
 
@@ -45,7 +47,7 @@ export class Tracers {
       dummy.position.copy(t.pos)
       quat.setFromUnitVectors(up, t.dir)
       dummy.quaternion.copy(quat)
-      dummy.scale.set(k, k, 1)
+      dummy.scale.set(k * t.width, k * t.width, t.length)
       dummy.updateMatrix()
       this.mesh.setMatrixAt(i, dummy.matrix)
       this.mesh.setColorAt(i, t.color)

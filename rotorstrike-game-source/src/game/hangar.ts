@@ -4,6 +4,8 @@
  */
 export type UpgradeKey = 'weapon' | 'motor' | 'hull'
 
+export type WeaponKind = 'machinegun' | 'pulse' | 'cannon' | 'autocannon' | 'rapid-pulse' | 'homing-missile'
+
 export type DroneStats = {
   /** Azami hız çarpanı. */
   speed: number
@@ -15,12 +17,23 @@ export type DroneStats = {
   range: number
 }
 
+export type WeaponProfile = {
+  name: string
+  kind: WeaponKind
+  /** Yükseltmeler ve drone istatistiği uygulanmadan önceki atış hızı. */
+  fireRate: number
+  spread: number
+  range: number
+  tracerColor: string
+}
+
 export type DroneSpec = {
   id: string
   name: string
   role: string
   price: number
   stats: DroneStats
+  weapon: WeaponProfile
   /** Gövde rengi, vurgu rengi ve cam rengi. */
   palette: { body: string; accent: string; glass: string }
   /** Prosedürel modelde kullanılan siluet ailesi. */
@@ -34,6 +47,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Eğitim / denge',
     price: 0,
     stats: { speed: 1, handling: 1, fireRate: 1, range: 1 },
+    weapon: { name: 'DENGELİ MAKİNELİ', kind: 'machinegun', fireRate: 8.5, spread: 0.0085, range: 280, tracerColor: '#ffd35c' },
     palette: { body: '#6f7a80', accent: '#ff6a2b', glass: '#1d2a30' },
     frame: 'scout',
   },
@@ -43,6 +57,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Hız avcısı',
     price: 1500,
     stats: { speed: 1.3, handling: 1.12, fireRate: 1.05, range: 0.9 },
+    weapon: { name: 'HASSAS PULSE', kind: 'pulse', fireRate: 6.5, spread: 0.003, range: 300, tracerColor: '#7ef9ff' },
     palette: { body: '#3c4a58', accent: '#ffd23f', glass: '#16232c' },
     frame: 'interceptor',
   },
@@ -52,6 +67,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Zırhlı platform',
     price: 2800,
     stats: { speed: 0.94, handling: 0.9, fireRate: 1, range: 1.05 },
+    weapon: { name: 'AĞIR TOP', kind: 'cannon', fireRate: 5, spread: 0.014, range: 240, tracerColor: '#ff8f3c' },
     palette: { body: '#5b6154', accent: '#3ad8c8', glass: '#182420' },
     frame: 'bastion',
   },
@@ -61,6 +77,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Ağır silah',
     price: 4200,
     stats: { speed: 0.9, handling: 0.84, fireRate: 1.45, range: 1.15 },
+    weapon: { name: 'OTOMATİK TOP', kind: 'autocannon', fireRate: 5.5, spread: 0.01, range: 260, tracerColor: '#ff4b3a' },
     palette: { body: '#4a4038', accent: '#ff8f3c', glass: '#241a14' },
     frame: 'gunship',
   },
@@ -70,6 +87,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Çevik akrobat',
     price: 6000,
     stats: { speed: 1.14, handling: 1.45, fireRate: 1.2, range: 0.95 },
+    weapon: { name: 'HIZLI PULSE', kind: 'rapid-pulse', fireRate: 6.5, spread: 0.004, range: 250, tracerColor: '#3ad8c8' },
     palette: { body: '#2f3a44', accent: '#7ef9ff', glass: '#12222b' },
     frame: 'strike',
   },
@@ -79,6 +97,7 @@ export const DRONES: readonly DroneSpec[] = [
     role: 'Üst seviye',
     price: 9000,
     stats: { speed: 1.24, handling: 1.3, fireRate: 1.32, range: 1.2 },
+    weapon: { name: 'TAKİP FÜZESİ', kind: 'homing-missile', fireRate: 1.25, spread: 0, range: 250, tracerColor: '#c9a227' },
     palette: { body: '#23262c', accent: '#c9a227', glass: '#101318' },
     frame: 'phantom',
   },
@@ -122,6 +141,10 @@ export type Loadout = {
   fireRate: number
   range: number
   repairDelay: number
+  weaponName: string
+  weaponKind: WeaponKind
+  spread: number
+  tracerColor: string
 }
 
 /** Dron + yükseltmelerden somut uçuş/silah değerleri üretir. */
@@ -135,19 +158,23 @@ export function resolveLoadout(
     maxSpeed: base.maxSpeed * drone.stats.speed * up.speed,
     accel: base.accel * drone.stats.handling * up.handling,
     vertical: base.vertical * drone.stats.handling * up.handling,
-    fireRate: base.fireRate * drone.stats.fireRate * up.fireRate,
-    range: base.range * drone.stats.range,
+    fireRate: Math.min(base.fireRate, drone.weapon.fireRate * drone.stats.fireRate * up.fireRate),
+    range: Math.min(base.range, drone.weapon.range * drone.stats.range),
     repairDelay: up.repairDelay,
+    weaponName: drone.weapon.name,
+    weaponKind: drone.weapon.kind,
+    spread: drone.weapon.spread,
+    tracerColor: drone.weapon.tracerColor,
   }
 }
 
 /** Katalog istatistiklerini 0..100 arası çubuk değerine çevirir (arayüz için). */
 export function statBars(drone: DroneSpec): { label: string; value: number }[] {
-  const pct = (v: number, min: number, max: number) => Math.round(((v - min) / (max - min)) * 100)
+  const pct = (v: number, min: number, max: number) => Math.max(0, Math.min(100, Math.round(((v - min) / (max - min)) * 100)))
   return [
     { label: 'Hız', value: pct(drone.stats.speed, 0.8, 1.35) },
     { label: 'Çeviklik', value: pct(drone.stats.handling, 0.8, 1.5) },
-    { label: 'Ateş', value: pct(drone.stats.fireRate, 0.9, 1.5) },
-    { label: 'Menzil', value: pct(drone.stats.range, 0.85, 1.25) },
+    { label: 'Ateş', value: pct(drone.weapon.fireRate * drone.stats.fireRate, 4.5, 8.5) },
+    { label: 'Menzil', value: pct(drone.weapon.range * drone.stats.range, 220, 300) },
   ]
 }
